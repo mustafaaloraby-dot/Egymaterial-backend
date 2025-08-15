@@ -1,59 +1,78 @@
 import express from "express";
-import puppeteer from "puppeteer";
+import fetch from "node-fetch";
 import cron from "node-cron";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-let pricesCache = [];
 
-async function fetchPrices() {
-  console.log("Scraping prices...");
+let pricesCache = {
+  lastUpdated: null,
+  data: []
+};
+
+// Fetch prices from Gemini AI
+async function fetchPricesWithGemini() {
   try {
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    });
-    const page = await browser.newPage();
+    console.log("🔄 Fetching prices from Gemini AI...");
 
-    // Pretend to be Chrome
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: "Provide the latest steel rebar, cement, and other major building material prices in Egypt in EGP per ton, in JSON format with fields: material, price, unit, and source."
+                }
+              ]
+            }
+          ]
+        })
+      }
     );
 
-    await page.goto("https://example.com/material-prices", {
-      waitUntil: "networkidle2",
-      timeout: 0
-    });
+    if (!response.ok) throw new Error(`Gemini API Error: ${response.status}`);
 
-    // Extract prices (adjust selector to real site)
-    const prices = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll(".price-row")).map(row => ({
-        material: row.querySelector(".material-name")?.innerText.trim(),
-        price: row.querySelector(".material-price")?.innerText.trim(),
-      }));
-    });
+    const data = await response.json();
+    const text = data.candidates[0]?.content?.parts[0]?.text || "{}";
 
-    pricesCache = prices;
-    console.log("Updated prices:", pricesCache);
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      console.error("⚠️ Failed to parse Gemini JSON response. Raw text:", text);
+      return;
+    }
 
-    await browser.close();
-  } catch (err) {
-    console.error("Scraping error:", err.message);
+    pricesCache = {
+      lastUpdated: new Date().toISOString(),
+      data: parsed
+    };
+
+    console.log("✅ Prices updated via Gemini AI");
+
+  } catch (error) {
+    console.error("❌ Error fetching prices via Gemini:", error.message);
   }
 }
 
+// Run every hour
+cron.schedule("0 * * * *", fetchPricesWithGemini);
+
+// API endpoint to get prices
 app.get("/getPrices", (req, res) => {
   res.set("Cache-Control", "no-store");
   res.json(pricesCache);
 });
 
-// Run every hour
-cron.schedule("0 * * * *", fetchPrices);
-
-// Run once at startup
-fetchPrices();
-
+// Start server
 app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
+  console.log(`🚀 Gemini backend running on port ${PORT}`);
+  fetchPricesWithGemini(); // Fetch on startup
 });
