@@ -18,10 +18,15 @@ if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID || !GEMINI_API_KEY) {
 
 let cache = { updatedAt: null, items: [] };
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-  'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
-};
+async function fetchWithHeaders(url) {
+  return axios.get(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+    }
+  });
+}
 
 function parseNum(s) {
   if (!s) return null;
@@ -65,7 +70,7 @@ async function googleSearch(q, num=3) {
 // Fetch page text for LLM
 async function fetchPageText(url) {
   try {
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000, maxRedirects: 5, validateStatus: s=>s>=200 && s<400 });
+    const { data } = await fetchWithHeaders(url, { headers: HEADERS, timeout: 15000, maxRedirects: 5, validateStatus: s=>s>=200 && s<400 });
     if (typeof data === 'string') {
       // crude text extraction
       const text = data.replace(/<script[\s\S]*?<\/script>/gi,'')
