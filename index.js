@@ -1,8 +1,28 @@
+
 import express from 'express';
 import axios from 'axios';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 dotenv.config();
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9'
+};
+
+let cachedPrices = null;
+let lastFetched = 0;
+async function getPricesCached() {
+  const now = Date.now();
+  if (!cachedPrices || (now - lastFetched) > 60 * 60 * 1000) {
+    console.log("Fetching fresh prices from Gemini...");
+    cachedPrices = await fetchFromGemini(item); // your current Gemini fetch function
+    lastFetched = now;
+  } else {
+    console.log("Using cached prices.");
+  }
+  return cachedPrices;
+}
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,14 +39,15 @@ if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID || !GEMINI_API_KEY) {
 let cache = { updatedAt: null, items: [] };
 
 async function fetchWithHeaders(url) {
-  return axios.get(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
-      "Accept-Language": "en-US,en;q=0.9",
-    }
-  });
+ return axios.get(url, {
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9"
+  }
+});
 }
+
 
 function parseNum(s) {
   if (!s) return null;
@@ -50,20 +71,31 @@ function inferUnit(category) {
 
 function dedupe(items) {
   const map = new Map();
-  for (const it of items) {
+async function fetchAllPrices() {
+  for (const item of items) {
+  try {
+    const result = await fetchFromGemini(item);
+    console.log(`✅ Got price for: ${item}`, result);
+  } catch (err) {
+    console.error(`❌ Failed to fetch: ${item}`, err.message);
+  }
+  await new Promise(res => setTimeout(res, 2000)); // delay to avoid 429
+}
     const key = `${(it.material||'').toLowerCase()}|${(it.source||'').toLowerCase()}`;
     if (!map.has(key)) map.set(key, it);
   }
   return [...map.values()];
 }
 
+
 // Google Programmable Search
 async function googleSearch(q, num=3) {
   const url = 'https://www.googleapis.com/customsearch/v1';
   const { data } = await axios.get(url, {
-    params: { key: GOOGLE_API_KEY, cx: GOOGLE_CSE_ID, q, num },
-    headers: HEADERS, timeout: 15000
-  });
+  params: { key: GOOGLE_API_KEY, cx: GOOGLE_CSE_ID, q, num },
+  headers: { ...HEADERS },
+  timeout: 15000
+});
   return (data.items || []).map(i => ({ title: i.title, link: i.link, snippet: i.snippet }));
 }
 
@@ -133,63 +165,101 @@ const QUERIES = [
   'اسعار الخرسانة الجاهزة اليوم في مصر'
 ];
 
+import fs from 'fs';
+
+const CACHE_FILE = './price_cache.json';
+const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+
 async function updatePrices() {
-  console.log('🔄 Updating prices...');
-  let results = [];
+  let cacheData = {};
+
+  // Load cache if exists
+  if (fs.existsSync(CACHE_FILE)) {
+    try {
+      cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    } catch (err) {
+      console.error("Error reading cache file:", err);
+      cacheData = {};
+    }
+  }
+
   for (const q of QUERIES) {
-    let hits = [];
-    try { hits = await googleSearch(q, 3); } catch (e) { console.warn('Search failed for', q, e.message); }
-    for (const h of hits) {
-      const text = await fetchPageText(h.link);
-      const items = await geminiExtract(text, h.link);
-      for (const x of items) {
-        const cat = x.material_category || inferCategory(x.material);
-        const price = x.price_numeric || parseNum(x.price_text);
-        if (!price) continue;
-        if (x.currency && String(x.currency).toUpperCase() !== 'EGP') continue;
-        results.push({
-          material: x.material || 'Unknown',
-          material_category: cat,
-          price,
-          unit: x.unit || inferUnit(cat),
-          currency: 'EGP',
-          source: x.source || new URL(h.link).hostname,
-          url: h.link,
-          price_text: x.price_text,
-          timestamp: new Date().toISOString()
-        });
+    const lastFetch = cacheData[q]?.timestamp || 0;
+    const isExpired = Date.now() - lastFetch > CACHE_DURATION;
+
+    if (isExpired) {
+      console.log(`🔍 Searching for: ${q}`);
+
+      try {
+        // Delay to avoid hitting Google API rate limit
+        await new Promise(res => setTimeout(res, 2000));
+
+        // Get top 3 results from Google Custom Search
+        const hits = await googleSearch(q, 3);
+        cacheData[q] = { timestamp: Date.now(), links: hits };
+      } catch (e) {
+        console.warn(`Search failed for "${q}"`, e.message);
+        continue;
+      }
+    } else {
+      console.log(`✅ Using cached results for: ${q}`);
+    }
+
+    // Fetch page text for each cached link
+    const links = cacheData[q].links || [];
+    for (const link of links) {
+      try {
+        const text = await fetchPageText(link.link);
+        console.log(`📄 Got text from ${link}`);
+        // Store or process price extraction here...
+      } catch (e) {
+        console.warn(`Failed to fetch ${link}`, e.message);
       }
     }
   }
-  results = dedupe(results);
-  if (!results.length) {
-    // fallback demo / cached
-    if (cache.items.length) {
-      cache.items = cache.items.map(i => ({ ...i, stale: true, timestamp: new Date().toISOString() }));
-      console.warn('No new items; serving cached (stale)');
-    } else {
-      cache.items = [
-        { material: 'Steel Rebar', material_category: 'steel', price: 38200, unit: 'EGP/ton', currency: 'EGP', source: 'Demo', url: 'about:demo', timestamp: new Date().toISOString(), demo: true },
-        { material: 'Cement (Ordinary)', material_category: 'cement', price: 1850, unit: 'EGP/ton', currency: 'EGP', source: 'Demo', url: 'about:demo', timestamp: new Date().toISOString(), demo: true },
-        { material: 'Ready Mix Concrete 350', material_category: 'concrete', price: 750, unit: 'EGP/m3', currency: 'EGP', source: 'Demo', url: 'about:demo', timestamp: new Date().toISOString(), demo: true }
-      ];
-      console.warn('No data; serving demo items');
-    }
-  } else {
-    cache.items = results;
-  }
-  cache.updatedAt = new Date().toISOString();
-  console.log('✅ Update finished. Items:', cache.items.length);
-}
 
+  // Save updated cache
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2), 'utf8');
+  console.log("💾 Cache saved.");
+}
 // Run once and then hourly
 updatePrices();
 cron.schedule('0 * * * *', updatePrices);
 
 // API
-app.get('/getPrices', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(cache.items);
+// Then below in your routes:
+// --- Gemini API fetch helper ---
+async function fetchFromGemini(item) {
+  const API_KEY = process.env.GEMINI_API_KEY;
+  if (!API_KEY) {
+    throw new Error("Missing GEMINI_API_KEY environment variable");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${API_KEY}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [{
+        parts: [{ text: `Get the latest ${item} prices in Egypt in EGP.` }]
+      }]
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gemini API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  // Return just the text Gemini generated
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No data found";
+}
+app.get('/getPrices', async (req, res) => {
+  const prices = await getPricesCached();
+  res.json(prices);
 });
 app.get('/', (req, res) => {
   res.json({ ok: true, count: cache.items.length, updatedAt: cache.updatedAt });
