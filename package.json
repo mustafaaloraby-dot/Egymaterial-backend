@@ -1,0 +1,19 @@
+{
+  "name": "egymaterial-gemini-backend",
+  "version": "1.0.0",
+  "description": "Backend that uses Google Custom Search + Gemini AI to find & extract Egypt construction material prices hourly.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
