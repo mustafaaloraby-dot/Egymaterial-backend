@@ -1,7 +1,6 @@
 {
   "name": "egymaterial-gemini-backend",
   "version": "1.0.0",
-  "description": "Backend service to fetch material prices from Gemini API",
   "main": "index.js",
   "type": "module",
   "scripts": {
