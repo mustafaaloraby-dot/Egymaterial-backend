@@ -1,19 +1,18 @@
 import express from "express";
 import axios from "axios";
-import fs from "fs";
 
 const app = express();
-const PORT = 3000;
-
-// --- CONFIG ---
+const PORT = process.env.PORT || 3000; // ✅ Render provides PORT
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const CACHE_FILE = "./price_cache.json";
 
 // --- Materials to track ---
 const items = [
   "steel rebar price Egypt today EGP",
   "cement price Egypt today EGP"
 ];
+
+// --- In-memory cache (resets when container restarts) ---
+let cacheData = {};
 
 // --- Gemini API fetch helper ---
 async function fetchFromGemini(item) {
@@ -45,21 +44,8 @@ async function fetchFromGemini(item) {
   }
 }
 
-// --- Update prices with caching ---
+// --- Update prices with cache ---
 async function updatePrices() {
-  let cacheData = {};
-
-  // Load cache
-  if (fs.existsSync(CACHE_FILE)) {
-    try {
-      cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    } catch (err) {
-      console.error("⚠️ Failed to read cache:", err.message);
-      cacheData = {};
-    }
-  }
-
-  // Fetch fresh prices if needed
   for (const item of items) {
     if (cacheData[item]) {
       console.log(`✅ Using cached results for: ${item}`);
@@ -69,12 +55,7 @@ async function updatePrices() {
       cacheData[item] = price || "Not found";
     }
   }
-
-  // Save updated cache
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2));
-  console.log("💾 Cache saved.");
-
-  return cacheData; // ✅ always return
+  return cacheData;
 }
 
 // --- Express route ---
@@ -88,7 +69,12 @@ app.get("/get-prices", async (req, res) => {
   }
 });
 
+// --- Health check (Render needs this sometimes) ---
+app.get("/", (req, res) => {
+  res.send("✅ Egymaterial backend running on Render");
+});
+
 // --- Start server ---
 app.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
