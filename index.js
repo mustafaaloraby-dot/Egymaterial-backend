@@ -1,6 +1,6 @@
 import express from "express";
 import fs from "fs";
-import path from "path";
+import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -8,92 +8,87 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Cache file path
-const CACHE_FILE = path.join(process.cwd(), "priceCache.json");
+const CACHE_FILE = "./cache.json";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// --- Fetch price from Gemini ---
-async function fetchFromGemini(query) {
+// --- Gemini fetch function ---
+async function fetchGeminiPrice(query) {
   try {
-    console.log(`🔄 Fetching fresh price for: ${query}`);
-
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" +
-        process.env.GEMINI_API_KEY,
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [
             {
-              parts: [
-                { text: `Give me only the latest ${query}, number only, no words.` }
-              ]
+              role: "user",
+              parts: [{ text: query }]
             }
           ]
         })
       }
     );
 
-    if (!response.ok) {
-      console.error(
-        `❌ Gemini API error for "${query}": ${response.status} ${response.statusText}`
-      );
-      return null;
+    if (!resp.ok) {
+      throw new Error(`Gemini API error: ${resp.status} ${resp.statusText}`);
     }
 
-    const data = await response.json();
-    return (
-      data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "Not found"
-    );
+    const data = await resp.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "No answer";
   } catch (err) {
-    console.error(`❌ Error fetching from Gemini for "${query}":`, err.message);
+    console.error(`❌ Gemini API error for "${query}":`, err.message);
     return null;
   }
 }
 
-// --- Cache-aware fetch ---
+// --- Cache-aware price fetch ---
 async function getPricesCached() {
   let cacheData = {};
+
+  // Load cache
   if (fs.existsSync(CACHE_FILE)) {
     try {
       cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    } catch (err) {
-      console.error("⚠️ Failed to read cache:", err.message);
+    } catch {
+      cacheData = {};
     }
   }
 
+  const now = Date.now();
   const queries = [
     "steel rebar price Egypt today EGP",
     "cement price Egypt today EGP"
   ];
 
   const results = {};
-  for (const query of queries) {
-    if (cacheData[query]) {
-      console.log(`✅ Using cached results for: ${query}`);
-      results[query] = cacheData[query];
+  for (const q of queries) {
+    const cached = cacheData[q];
+
+    // Use cache if < 1 hour old
+    if (cached && now - cached.timestamp < 60 * 60 * 1000) {
+      results[q] = cached.value;
     } else {
-      results[query] = await fetchFromGemini(query);
-      cacheData[query] = results[query];
+      console.log("🔄 Fetching fresh price for:", q);
+      const val = await fetchGeminiPrice(q);
+      results[q] = val;
+      cacheData[q] = { value: val, timestamp: now };
     }
   }
 
+  // Save updated cache
   fs.writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2));
   console.log("💾 Cache saved.");
   return results;
 }
 
-// --- Express Routes ---
-app.get("/", (req, res) => {
-  res.send("✅ Backend is running. Use /get-prices to fetch data.");
-});
-
+// --- API route ---
 app.get("/get-prices", async (req, res) => {
   const prices = await getPricesCached();
   res.json({ ok: true, data: prices });
 });
 
-// --- Start Server ---
+// --- Start server ---
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
